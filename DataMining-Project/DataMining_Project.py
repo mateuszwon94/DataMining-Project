@@ -1,7 +1,9 @@
 #!/usr/bin/env python3.6
 # coding UTF-8
 
-
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import math
 import random
 from sys import float_info
@@ -33,9 +35,10 @@ def generate_list_of_random_points(n, limit):
     list_of_random_points = []
     limit += 1
     for counter in xrange(n):
-        x = random.randrange(limit)
-        y = random.randrange(limit)
-        point = {"id": counter+1, "x": x, "y": y, "density": None, "distance_to_higher_density_point" : None}
+        x = round(random.uniform(0, limit), 2)
+        y = round(random.uniform(0, limit), 2)
+        point = {"id": counter+1, "x": x, "y": y, "density": None,
+                 "distance_to_higher_density_point": None, "cluster": None}
         list_of_random_points.append(point)
     return list_of_random_points
 
@@ -79,27 +82,70 @@ def set_distance_to_higher_density_point(point_i, points):
     return point_i
     
 
-def generate_and_calculate(sc, n, limit):
-    list_of_random_points = generate_list_of_random_points(n=10, limit=20)
+def generate_and_calculate(sc, n, limit, cutoff_distance):
+    list_of_random_points = generate_list_of_random_points(n, limit)
+    plot_of_x_and_y(list_of_random_points, "x_and_y.png")
     pointsRDD = sc.parallelize(list_of_random_points)
 
-    cutoff_distance = 10
-    points_with_local_density = pointsRDD.map(lambda point: set_density(point, list_of_random_points, cutoff_distance))
+    points_with_local_density = pointsRDD.map(
+        lambda point: set_density(point, list_of_random_points, cutoff_distance))
     list_of_random_points = [point for point in points_with_local_density.toLocalIterator()]
 
-    points_with_distance_to_higher_density_point = points_with_local_density.map(lambda point: set_distance_to_higher_density_point(point, list_of_random_points))
-    print("\n\npoints_with_distance_to_higher_density_point:")
-    print(points_with_distance_to_higher_density_point.collect())
+    points_with_distance_to_higher_density_point = points_with_local_density.map(
+        lambda point: set_distance_to_higher_density_point(point, list_of_random_points))
+    # print("\n\npoints_with_distance_to_higher_density_point:")
+    # print(points_with_distance_to_higher_density_point.collect())
 
-    return [point for point in points_with_distance_to_higher_density_point.toLocalIterator()]
+    return points_with_distance_to_higher_density_point
+
+
+def plot_of_x_and_y(points, file_name):
+    x = [point["x"] for point in points]
+    y = [point["y"] for point in points]
+    fig, ax = matplotlib.pyplot.subplots()
+    ax.scatter(x, y, color='b')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    fig.savefig(file_name)
+
+
+def plot_of_density_and_distance_to_higher_density_point(points, file_name):
+    points = [point for point in points.toLocalIterator()]
+    x = [point["density"] for point in points]
+    y = [point["distance_to_higher_density_point"] for point in points]
+    c = ['green' if point["cluster"] is not None else 'red' for point in points]
+    fig, ax = matplotlib.pyplot.subplots()
+    ax.scatter(x, y, c=c)
+    ax.set_xlabel('density')
+    ax.set_ylabel('distance_to_higher_density_point')
+    fig.savefig(file_name)
+
+
+def choose_centers_of_clusters(points, n):
+    
+    def set_cluster(point, centers):
+        for i, center in enumerate(centers):
+            if point["id"] == center["id"]:
+                    point["cluster"] = i
+        return point
+    
+    sorted_points = points.sortBy(
+        lambda p: -(p["density"] * p["distance_to_higher_density_point"]))
+    centers = sorted_points.take(n)
+    points = points.map(
+        lambda point: set_cluster(point, centers))
+    return points
+
 
 
 if __name__ == "__main__":
     conf = SparkConf().setAppName('DataMining_Project')
     sc = SparkContext(conf=conf)
 
-    list_of_random_points = generate_and_calculate(sc, n=15, limit=20)
-    
+    points = generate_and_calculate(sc, n=200, limit=10, cutoff_distance=1)
+    points = choose_centers_of_clusters(points, n=5)  # TODO: try to write function, which automatically chooses number of centers
+    plot_of_density_and_distance_to_higher_density_point(points, 'density.png')
+    print(points.collect())
 
     print("\n\nDataMining_Project!")
 
