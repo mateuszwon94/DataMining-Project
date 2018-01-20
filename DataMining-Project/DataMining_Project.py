@@ -8,25 +8,16 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import math
 import random
+import time
 from sys import float_info
 from pyspark import SparkContext, SparkConf
 
 
-# Point Class
-#class Point(object):
-#    def __init__(self, x, y, density = None, distance = None):
-#        self.x = x              
-#        self.y = y
-#        self.density = density
-#        self.distance_to_higher_density_point = distance
-#
-#    def __str__(self):
-#        return "(%d, %d)" % (self.x, self.y)
-#
-#    # Dinstance between two points
-#    def distance_to(self, other):
-#        return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
-
+# Nice output :)
+def print_point(point):
+    print("(%.2f, %.2f)  -> id=%d,\tid_of_closest_neighbor=%s,\tcluster=%s,\tdensity=%d,\tdistance_to_higher_density_point=%.4f" % \
+        (point["x"], point["y"], point["id"], str(point["id_of_point_with_higher_density"]), 
+         str(point["cluster"]), point["density"], point["distance_to_higher_density_point"]))
 
 # Dinstance between two points
 def distance_to(point_i, point_j):
@@ -35,7 +26,6 @@ def distance_to(point_i, point_j):
 # Function generating list of random points
 def generate_list_of_random_points(n, limit):
     list_of_random_points = []
-    limit += 1
     for counter in xrange(n):
         x = round(random.uniform(0, limit), 2)
         y = round(random.uniform(0, limit), 2)
@@ -88,7 +78,20 @@ def set_distance_to_higher_density_point(point_i, points):
     return point_i
     
 
+# Function generates n random points 
+# and calculates density and distance to higher density point
 def generate_and_calculate(sc, n, limit, cutoff_distance):
+    
+    # Simple plot of generated points
+    def plot_of_x_and_y(points, file_name):
+        x = [point["x"] for point in points]
+        y = [point["y"] for point in points]
+        fig, ax = matplotlib.pyplot.subplots()
+        ax.scatter(x, y, color='b')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        fig.savefig(file_name)
+
     list_of_random_points = generate_list_of_random_points(n, limit)
     plot_of_x_and_y(list_of_random_points, "x_and_y.png")
     pointsRDD = sc.parallelize(list_of_random_points)
@@ -99,20 +102,8 @@ def generate_and_calculate(sc, n, limit, cutoff_distance):
 
     points_with_distance_to_higher_density_point = points_with_local_density.map(
         lambda point: set_distance_to_higher_density_point(point, list_of_random_points))
-    # print("\n\npoints_with_distance_to_higher_density_point:")
-    # print(points_with_distance_to_higher_density_point.collect())
 
     return points_with_distance_to_higher_density_point
-
-
-def plot_of_x_and_y(points, file_name):
-    x = [point["x"] for point in points]
-    y = [point["y"] for point in points]
-    fig, ax = matplotlib.pyplot.subplots()
-    ax.scatter(x, y, color='b')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    fig.savefig(file_name)
 
 
 def plot_of_density_and_distance_to_higher_density_point(points, file_name):
@@ -127,36 +118,51 @@ def plot_of_density_and_distance_to_higher_density_point(points, file_name):
     fig.savefig(file_name)
 
 def plot_clusters(points, clusters_color, file_name):
-    def get_color(point):
-        if point["cluster"] == 0: return 'blue'
-        if point["cluster"] == 1: return 'green'
-        if point["cluster"] == 2: return 'red'
-        if point["cluster"] == 3: return 'yellow'
-        if point["cluster"] == 4: return 'black'
-        if point["cluster"] == 5: return 'purple'
-        if point["cluster"] == 6: return 'cyan'
-        if point["cluster"] == 7: return 'lime'
+
+    def get_color(point, clusters_color):
+        if point["cluster"] is None:
+            return clusters_color[0]
+        return clusters_color[point["cluster"]]
 
     x = [point["x"] for point in points.collect()]
     y = [point["y"] for point in points.collect()]
-    c = [get_color(point) for point in points.collect()]
+    c = [get_color(point, clusters_color) for point in points.collect()]
     fig, ax = matplotlib.pyplot.subplots()
     ax.scatter(x, y, color=c)
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     fig.savefig(file_name)
 
+
 def choose_centers_of_clusters(points, n):
+    
     # TODO: try to write function, which automatically chooses number of centers
     def set_center(point, centers):
         for i, center in enumerate(centers):
             if point["id"] == center["id"]:
-                    point["cluster"] = i
+                    point["cluster"] = i+1
 
         return point
+    
+    sorted_points = points.sortBy(
+        lambda p: -(p["density"] * p["distance_to_higher_density_point"]))
+    centers = sorted_points.take(n)
 
+    points = points.map(
+        lambda point: set_center(point, centers))
+
+    print("\n\nCenters of clusters:")
+    for point in points.collect():
+        if point["cluster"]:
+            print_point(point)
+
+    return points
+
+
+def assign_points_to_clusters(points):
+        
     def set_cluster(point, all_points):
-        if point["cluster"] != None or point["id_of_point_with_higher_density"] == None: return point
+        if point["cluster"] is not None or point["id_of_point_with_higher_density"] is None: return point
 
         ref_point = [ p for p in all_points 
                             if p["id"] == point["id_of_point_with_higher_density"] ][0]
@@ -164,35 +170,70 @@ def choose_centers_of_clusters(points, n):
 
         return point
 
-    
-    sorted_points = points.sortBy(
-        lambda p: -(p["density"] * p["distance_to_higher_density_point"]))
-    centers = sorted_points.take(n)
-    points = points.map(
-        lambda point: set_center(point, centers))
-
     all_points = points.collect()
-    while None in [ point["cluster"] for point in points.collect()]:
-        print("Assigning clusters")
+    
+    while None in [point["cluster"] for point in points.collect()]:
         points = points.map(lambda point: set_cluster(point, all_points))
         all_points = points.collect()
 
     return points
 
+
+def main(sc, clusters, n, limit, cutoff_distance):
+    clusters_color = ['black', 'green', 'blue', 'red', 'yellow', 'purple', 'cyan', 'lime']
+
+    points = generate_and_calculate(sc, n, limit, cutoff_distance)
+    points = choose_centers_of_clusters(points, clusters)
+    plot_of_density_and_distance_to_higher_density_point(points, 'density.png')
+
+    points = assign_points_to_clusters(points)
+    plot_clusters(points, clusters_color, 'clusters.png')  
+
+    print("\n\nPoints:")
+    for point in points.collect():
+        print_point(point)
+
+
+def complexity(sc, clusters, limit, cutoff_distance, p_min, p_max, k):
+    i = p_min
+    complexity_data = {"points": [], "time": []}
+    clusters_color = ['black', 'green', 'blue', 'red', 'yellow', 'purple', 'cyan', 'lime']
+    
+    while i<p_max:
+        try:
+            start_time = time.time()
+            points = generate_and_calculate(sc, i, limit, cutoff_distance)
+            points = choose_centers_of_clusters(points, clusters)
+            points = assign_points_to_clusters(points)
+        
+            elapsed_time = time.time() - start_time
+            complexity_data["points"].append(i)
+            complexity_data["time"].append(elapsed_time)
+
+            plot_clusters(points, clusters_color, 'clusters-%d.png' % i)
+            print("Points: %d  --->  time = %f"% (i, elapsed_time))
+            matplotlib.pyplot.close('all')
+           
+        except Exception:
+            print("Exception!!!")
+            continue
+        i += k
+
+
+    fig, ax = matplotlib.pyplot.subplots()
+    ax.scatter(complexity_data["points"], complexity_data["time"])
+    ax.set_xlabel('points')
+    ax.set_ylabel('time')
+    fig.savefig('complexity-%d.png' % clusters)
+
+
 if __name__ == "__main__":
     conf = SparkConf().setAppName('DataMining_Project')
     sc = SparkContext(conf=conf)
 
-    clusters = 7
+    #main(sc, clusters=5, n=100, limit=10, cutoff_distance=1)
 
-    points = generate_and_calculate(sc, n=200, limit=10, cutoff_distance=1)
-    points = choose_centers_of_clusters(points, clusters)
+    complexity(sc, clusters=5, limit=10, cutoff_distance=1, p_min=20, p_max=1000, k=20)
 
-    plot_clusters(points, ['green', 'blue', 'red', 'black', 'yellow'], 'clusters.png')
-    
-    plot_of_density_and_distance_to_higher_density_point(points, 'density.png')
-    for point in points.collect():
-        print(point)
-
+    matplotlib.pyplot.close('all')
     print("\n\nDataMining_Project!")
-
