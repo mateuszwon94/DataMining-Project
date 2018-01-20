@@ -1,5 +1,7 @@
-#!/usr/bin/env python3.6
+#!/usr/bin/env python2
 # coding UTF-8
+
+from __future__ import division, print_function
 
 import matplotlib
 matplotlib.use('Agg')
@@ -37,8 +39,11 @@ def generate_list_of_random_points(n, limit):
     for counter in xrange(n):
         x = round(random.uniform(0, limit), 2)
         y = round(random.uniform(0, limit), 2)
-        point = {"id": counter+1, "x": x, "y": y, "density": None,
-                 "distance_to_higher_density_point": None, "cluster": None}
+        point = {"id": counter+1, "x": x, "y": y,
+                 "density": None,
+                 "distance_to_higher_density_point": None,
+                 "id_of_point_with_higher_density": None,
+                 "cluster": None}
         list_of_random_points.append(point)
     return list_of_random_points
 
@@ -69,6 +74,7 @@ def set_distance_to_higher_density_point(point_i, points):
 
         if distance_to(point_i, point_j) < point_i["distance_to_higher_density_point"]:
             point_i["distance_to_higher_density_point"] = distance_to(point_i, point_j)
+            point_i["id_of_point_with_higher_density"] = point_j["id"]
 
     if point_i["distance_to_higher_density_point"] == float("inf"):
        point_i["distance_to_higher_density_point"] = 0
@@ -110,7 +116,7 @@ def plot_of_x_and_y(points, file_name):
 
 
 def plot_of_density_and_distance_to_higher_density_point(points, file_name):
-    points = [point for point in points.toLocalIterator()]
+    points =  points.collect()
     x = [point["density"] for point in points]
     y = [point["distance_to_higher_density_point"] for point in points]
     c = ['green' if point["cluster"] is not None else 'red' for point in points]
@@ -120,32 +126,73 @@ def plot_of_density_and_distance_to_higher_density_point(points, file_name):
     ax.set_ylabel('distance_to_higher_density_point')
     fig.savefig(file_name)
 
+def plot_clusters(points, clusters_color, file_name):
+    def get_color(point):
+        if point["cluster"] == 0: return 'blue'
+        if point["cluster"] == 1: return 'green'
+        if point["cluster"] == 2: return 'red'
+        if point["cluster"] == 3: return 'yellow'
+        if point["cluster"] == 4: return 'black'
+        if point["cluster"] == 5: return 'purple'
+        if point["cluster"] == 6: return 'cyan'
+        if point["cluster"] == 7: return 'lime'
+
+    x = [point["x"] for point in points.collect()]
+    y = [point["y"] for point in points.collect()]
+    c = [get_color(point) for point in points.collect()]
+    fig, ax = matplotlib.pyplot.subplots()
+    ax.scatter(x, y, color=c)
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    fig.savefig(file_name)
 
 def choose_centers_of_clusters(points, n):
-    
-    def set_cluster(point, centers):
+    # TODO: try to write function, which automatically chooses number of centers
+    def set_center(point, centers):
         for i, center in enumerate(centers):
             if point["id"] == center["id"]:
                     point["cluster"] = i
+
         return point
+
+    def set_cluster(point, all_points):
+        if point["cluster"] != None or point["id_of_point_with_higher_density"] == None: return point
+
+        ref_point = [ p for p in all_points 
+                            if p["id"] == point["id_of_point_with_higher_density"] ][0]
+        point["cluster"] = ref_point["cluster"]
+
+        return point
+
     
     sorted_points = points.sortBy(
         lambda p: -(p["density"] * p["distance_to_higher_density_point"]))
     centers = sorted_points.take(n)
     points = points.map(
-        lambda point: set_cluster(point, centers))
+        lambda point: set_center(point, centers))
+
+    all_points = points.collect()
+    while None in [ point["cluster"] for point in points.collect()]:
+        print("Assigning clusters")
+        points = points.map(lambda point: set_cluster(point, all_points))
+        all_points = points.collect()
+
     return points
-
-
 
 if __name__ == "__main__":
     conf = SparkConf().setAppName('DataMining_Project')
     sc = SparkContext(conf=conf)
 
+    clusters = 7
+
     points = generate_and_calculate(sc, n=200, limit=10, cutoff_distance=1)
-    points = choose_centers_of_clusters(points, n=5)  # TODO: try to write function, which automatically chooses number of centers
+    points = choose_centers_of_clusters(points, clusters)
+
+    plot_clusters(points, ['green', 'blue', 'red', 'black', 'yellow'], 'clusters.png')
+    
     plot_of_density_and_distance_to_higher_density_point(points, 'density.png')
-    print(points.collect())
+    for point in points.collect():
+        print(point)
 
     print("\n\nDataMining_Project!")
 
